@@ -16,16 +16,17 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.kstream.Windowed;
 import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.StateStore;
-import org.apache.kafka.streams.processor.internals.ProcessorStateManager;
+import org.apache.kafka.streams.processor.StateStoreContext;
+import org.apache.kafka.streams.processor.internals.InternalProcessorContext;
 import org.apache.kafka.streams.state.KeyValueIterator;
-import org.apache.kafka.streams.state.StateSerdes;
 import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.streams.state.WindowStoreIterator;
+
+import static org.apache.kafka.streams.processor.internals.ProcessorContextUtils.asInternalProcessorContext;
 
 /**
  * Simple wrapper around a {@link WindowStore} to support writing
@@ -36,10 +37,8 @@ class ChangeLoggingWindowBytesStore
     implements WindowStore<Bytes, byte[]> {
 
     private final boolean retainDuplicates;
-    private ProcessorContext context;
+    InternalProcessorContext context;
     private int seqnum = 0;
-
-    StoreChangeLogger<Bytes, byte[]> changeLogger;
 
     ChangeLoggingWindowBytesStore(final WindowStore<Bytes, byte[]> bytesStore,
                                   final boolean retainDuplicates) {
@@ -47,16 +46,19 @@ class ChangeLoggingWindowBytesStore
         this.retainDuplicates = retainDuplicates;
     }
 
+    @Deprecated
     @Override
     public void init(final ProcessorContext context,
                      final StateStore root) {
-        this.context = context;
+        this.context = asInternalProcessorContext(context);
         super.init(context, root);
-        final String topic = ProcessorStateManager.storeChangelogTopic(context.applicationId(), name());
-        changeLogger = new StoreChangeLogger<>(
-            name(),
-            context,
-            new StateSerdes<>(topic, Serdes.Bytes(), Serdes.ByteArray()));
+    }
+
+    @Override
+    public void init(final StateStoreContext context,
+                     final StateStore root) {
+        this.context = asInternalProcessorContext(context);
+        super.init(context, root);
     }
 
     @Override
@@ -73,18 +75,39 @@ class ChangeLoggingWindowBytesStore
         return wrapped().fetch(key, from, to);
     }
 
+    @Override
+    public WindowStoreIterator<byte[]> backwardFetch(final Bytes key,
+                                                     final long timeFrom,
+                                                     final long timeTo) {
+        return wrapped().backwardFetch(key, timeFrom, timeTo);
+    }
+
     @SuppressWarnings("deprecation") // note, this method must be kept if super#fetch(...) is removed
     @Override
     public KeyValueIterator<Windowed<Bytes>, byte[]> fetch(final Bytes keyFrom,
                                                            final Bytes keyTo,
-                                                           final long from,
+                                                           final long timeFrom,
                                                            final long to) {
-        return wrapped().fetch(keyFrom, keyTo, from, to);
+        return wrapped().fetch(keyFrom, keyTo, timeFrom, to);
+    }
+
+    @Override
+    public KeyValueIterator<Windowed<Bytes>, byte[]> backwardFetch(final Bytes keyFrom,
+                                                                   final Bytes keyTo,
+                                                                   final long timeFrom,
+                                                                   final long timeTo) {
+        return wrapped().backwardFetch(keyFrom, keyTo, timeFrom, timeTo);
     }
 
     @Override
     public KeyValueIterator<Windowed<Bytes>, byte[]> all() {
         return wrapped().all();
+    }
+
+
+    @Override
+    public KeyValueIterator<Windowed<Bytes>, byte[]> backwardAll() {
+        return wrapped().backwardAll();
     }
 
     @SuppressWarnings("deprecation") // note, this method must be kept if super#fetchAll(...) is removed
@@ -94,6 +117,13 @@ class ChangeLoggingWindowBytesStore
         return wrapped().fetchAll(timeFrom, timeTo);
     }
 
+    @Override
+    public KeyValueIterator<Windowed<Bytes>, byte[]> backwardFetchAll(final long timeFrom,
+                                                                      final long timeTo) {
+        return wrapped().backwardFetchAll(timeFrom, timeTo);
+    }
+
+    @Deprecated
     @Override
     public void put(final Bytes key, final byte[] value) {
         // Note: It's incorrect to bypass the wrapped store here by delegating to another method,
@@ -113,7 +143,7 @@ class ChangeLoggingWindowBytesStore
 
     void log(final Bytes key,
              final byte[] value) {
-        changeLogger.logChange(key, value);
+        context.logChange(name(), key, value, context.timestamp());
     }
 
     private int maybeUpdateSeqnumForDups() {

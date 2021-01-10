@@ -35,6 +35,10 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static java.util.Arrays.asList;
 import static org.apache.kafka.common.utils.Utils.utf8;
@@ -44,6 +48,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -69,28 +74,29 @@ public class FileRecordsTest {
         this.time = new MockTime();
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void testAppendProtectsFromOverflow() throws Exception {
         File fileMock = mock(File.class);
         FileChannel fileChannelMock = mock(FileChannel.class);
         when(fileChannelMock.size()).thenReturn((long) Integer.MAX_VALUE);
 
         FileRecords records = new FileRecords(fileMock, fileChannelMock, 0, Integer.MAX_VALUE, false);
-        append(records, values);
+        assertThrows(IllegalArgumentException.class, () -> append(records, values));
     }
 
-    @Test(expected = KafkaException.class)
+    @Test
     public void testOpenOversizeFile() throws Exception {
         File fileMock = mock(File.class);
         FileChannel fileChannelMock = mock(FileChannel.class);
         when(fileChannelMock.size()).thenReturn(Integer.MAX_VALUE + 5L);
 
-        new FileRecords(fileMock, fileChannelMock, 0, Integer.MAX_VALUE, false);
+        assertThrows(KafkaException.class, () -> new FileRecords(fileMock, fileChannelMock, 0, Integer.MAX_VALUE, false));
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void testOutOfRangeSlice() throws Exception {
-        this.fileRecords.slice(fileRecords.sizeInBytes() + 1, 15).sizeInBytes();
+    @Test
+    public void testOutOfRangeSlice() {
+        assertThrows(IllegalArgumentException.class,
+            () -> this.fileRecords.slice(fileRecords.sizeInBytes() + 1, 15).sizeInBytes());
     }
 
     /**
@@ -115,6 +121,36 @@ public class FileRecordsTest {
         testPartialWrite(4, fileRecords);
         testPartialWrite(5, fileRecords);
         testPartialWrite(6, fileRecords);
+    }
+
+    @Test
+    public void testSliceSizeLimitWithConcurrentWrite() throws Exception {
+        FileRecords log = FileRecords.open(tempFile());
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        int maxSizeInBytes = 16384;
+
+        try {
+            Future<Object> readerCompletion = executor.submit(() -> {
+                while (log.sizeInBytes() < maxSizeInBytes) {
+                    int currentSize = log.sizeInBytes();
+                    FileRecords slice = log.slice(0, currentSize);
+                    assertEquals(currentSize, slice.sizeInBytes());
+                }
+                return null;
+            });
+
+            Future<Object> writerCompletion = executor.submit(() -> {
+                while (log.sizeInBytes() < maxSizeInBytes) {
+                    append(log, values);
+                }
+                return null;
+            });
+
+            writerCompletion.get();
+            readerCompletion.get();
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     private void testPartialWrite(int size, FileRecords fileRecords) throws IOException {
@@ -432,6 +468,39 @@ public class FileRecordsTest {
                 CompressionType.NONE, TimestampType.CREATE_TIME, offset, timestamp, leaderEpoch);
         builder.append(new SimpleRecord(timestamp, new byte[0], new byte[0]));
         fileRecords.append(builder.build());
+    }
+
+    @Test
+    public void testDownconversionAfterMessageFormatDowngrade() throws IOException {
+        // random bytes
+        Random random = new Random();
+        byte[] bytes = new byte[3000];
+        random.nextBytes(bytes);
+
+        // records
+        CompressionType compressionType = CompressionType.GZIP;
+        List<Long> offsets = asList(0L, 1L);
+        List<Byte> magic = asList(RecordBatch.MAGIC_VALUE_V2, RecordBatch.MAGIC_VALUE_V1);  // downgrade message format from v2 to v1
+        List<SimpleRecord> records = asList(
+                new SimpleRecord(1L, "k1".getBytes(), bytes),
+                new SimpleRecord(2L, "k2".getBytes(), bytes));
+        byte toMagic = 1;
+
+        // create MemoryRecords
+        ByteBuffer buffer = ByteBuffer.allocate(8000);
+        for (int i = 0; i < records.size(); i++) {
+            MemoryRecordsBuilder builder = MemoryRecords.builder(buffer, magic.get(i), compressionType, TimestampType.CREATE_TIME, 0L);
+            builder.appendWithOffset(offsets.get(i), records.get(i));
+            builder.close();
+        }
+        buffer.flip();
+
+        // create FileRecords, down-convert and verify
+        try (FileRecords fileRecords = FileRecords.open(tempFile())) {
+            fileRecords.append(MemoryRecords.readableRecords(buffer));
+            fileRecords.flush();
+            downConvertAndVerifyRecords(records, offsets, fileRecords, compressionType, toMagic, 0L, time);
+        }
     }
 
     @Test

@@ -18,6 +18,8 @@ package kafka.server
 
 import java.util.Properties
 
+import scala.collection.Seq
+
 import kafka.utils.TestUtils
 import TestUtils._
 import kafka.zk.ZooKeeperTestHarness
@@ -73,7 +75,7 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
   }
 
   @Before
-  override def setUp() {
+  override def setUp(): Unit = {
     super.setUp()
 
     configs = TestUtils.createBrokerConfigs(2, zkConnect, enableControlledShutdown = false).map(KafkaConfig.fromProps(_, overridingProps))
@@ -91,7 +93,7 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
   }
 
   @After
-  override def tearDown() {
+  override def tearDown(): Unit = {
     producer.close()
     TestUtils.shutdownServers(servers)
     super.tearDown()
@@ -108,9 +110,9 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
       "Failed to update high watermark for follower after timeout")
 
     servers.foreach(_.replicaManager.checkpointHighWatermarks())
-    val leaderHW = hwFile1.read.getOrElse(topicPartition, 0L)
+    val leaderHW = hwFile1.read().getOrElse(topicPartition, 0L)
     assertEquals(numMessages, leaderHW)
-    val followerHW = hwFile2.read.getOrElse(topicPartition, 0L)
+    val followerHW = hwFile2.read().getOrElse(topicPartition, 0L)
     assertEquals(numMessages, followerHW)
   }
 
@@ -118,7 +120,7 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
   def testHWCheckpointWithFailuresSingleLogSegment(): Unit = {
     var leader = waitUntilLeaderIsElectedOrChanged(zkClient, topic, partitionId)
 
-    assertEquals(0L, hwFile1.read.getOrElse(topicPartition, 0L))
+    assertEquals(0L, hwFile1.read().getOrElse(topicPartition, 0L))
 
     sendMessages(1)
     Thread.sleep(1000)
@@ -126,7 +128,7 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
 
     // kill the server hosting the preferred replica
     server1.shutdown()
-    assertEquals(hw, hwFile1.read.getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile1.read().getOrElse(topicPartition, 0L))
 
     // check if leader moves to the other server
     leader = waitUntilLeaderIsElectedOrChanged(zkClient, topic, partitionId, oldLeaderOpt = Some(leader))
@@ -141,19 +143,19 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
     assertTrue("Leader must remain on broker 1, in case of ZooKeeper session expiration it can move to broker 0",
       leader == 0 || leader == 1)
 
-    assertEquals(hw, hwFile1.read.getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile1.read().getOrElse(topicPartition, 0L))
     /** We plan to shutdown server2 and transfer the leadership to server1.
       * With unclean leader election turned off, a prerequisite for the successful leadership transition
       * is that server1 has caught up on the topicPartition, and has joined the ISR.
       * In the line below, we wait until the condition is met before shutting down server2
       */
-    waitUntilTrue(() => server2.replicaManager.nonOfflinePartition(topicPartition).get.inSyncReplicas.size == 2,
+    waitUntilTrue(() => server2.replicaManager.nonOfflinePartition(topicPartition).get.inSyncReplicaIds.size == 2,
       "Server 1 is not able to join the ISR after restart")
 
 
     // since server 2 was never shut down, the hw value of 30 is probably not checkpointed to disk yet
     server2.shutdown()
-    assertEquals(hw, hwFile2.read.getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile2.read().getOrElse(topicPartition, 0L))
 
     server2.startup()
     updateProducer()
@@ -170,8 +172,8 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
       "Failed to update high watermark for follower after timeout")
     // shutdown the servers to allow the hw to be checkpointed
     servers.foreach(_.shutdown())
-    assertEquals(hw, hwFile1.read.getOrElse(topicPartition, 0L))
-    assertEquals(hw, hwFile2.read.getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile1.read().getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile2.read().getOrElse(topicPartition, 0L))
   }
 
   @Test
@@ -184,9 +186,9 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
       "Failed to update high watermark for follower after timeout")
     // shutdown the servers to allow the hw to be checkpointed
     servers.foreach(_.shutdown())
-    val leaderHW = hwFile1.read.getOrElse(topicPartition, 0L)
+    val leaderHW = hwFile1.read().getOrElse(topicPartition, 0L)
     assertEquals(hw, leaderHW)
-    val followerHW = hwFile2.read.getOrElse(topicPartition, 0L)
+    val followerHW = hwFile2.read().getOrElse(topicPartition, 0L)
     assertEquals(hw, followerHW)
   }
 
@@ -204,8 +206,8 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
     // kill the server hosting the preferred replica
     server1.shutdown()
     server2.shutdown()
-    assertEquals(hw, hwFile1.read.getOrElse(topicPartition, 0L))
-    assertEquals(hw, hwFile2.read.getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile1.read().getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile2.read().getOrElse(topicPartition, 0L))
 
     server2.startup()
     updateProducer()
@@ -213,14 +215,14 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
     leader = waitUntilLeaderIsElectedOrChanged(zkClient, topic, partitionId, oldLeaderOpt = Some(leader))
     assertEquals("Leader must move to broker 1", 1, leader)
 
-    assertEquals(hw, hwFile1.read.getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile1.read().getOrElse(topicPartition, 0L))
 
     // bring the preferred replica back
     server1.startup()
     updateProducer()
 
-    assertEquals(hw, hwFile1.read.getOrElse(topicPartition, 0L))
-    assertEquals(hw, hwFile2.read.getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile1.read().getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile2.read().getOrElse(topicPartition, 0L))
 
     sendMessages(2)
     hw += 2
@@ -234,11 +236,11 @@ class LogRecoveryTest extends ZooKeeperTestHarness {
       "Failed to update high watermark for follower after timeout")
     // shutdown the servers to allow the hw to be checkpointed
     servers.foreach(_.shutdown())
-    assertEquals(hw, hwFile1.read.getOrElse(topicPartition, 0L))
-    assertEquals(hw, hwFile2.read.getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile1.read().getOrElse(topicPartition, 0L))
+    assertEquals(hw, hwFile2.read().getOrElse(topicPartition, 0L))
   }
 
-  private def sendMessages(n: Int) {
+  private def sendMessages(n: Int): Unit = {
     (0 until n).map(_ => producer.send(new ProducerRecord(topic, 0, message))).foreach(_.get)
   }
 }

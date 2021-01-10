@@ -19,14 +19,15 @@ package kafka.server.epoch
 
 import java.io.File
 
+import scala.collection.Seq
+import scala.collection.mutable.ListBuffer
+
 import kafka.server.checkpoints.{LeaderEpochCheckpoint, LeaderEpochCheckpointFile}
-import org.apache.kafka.common.requests.EpochEndOffset.{UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET}
 import kafka.utils.TestUtils
+import org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse.{UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET}
 import org.apache.kafka.common.TopicPartition
 import org.junit.Assert._
 import org.junit.Test
-
-import scala.collection.mutable.ListBuffer
 
 /**
   * Unit test for the LeaderEpochFileCache.
@@ -36,10 +37,27 @@ class LeaderEpochFileCacheTest {
   private var logEndOffset = 0L
   private val checkpoint: LeaderEpochCheckpoint = new LeaderEpochCheckpoint {
     private var epochs: Seq[EpochEntry] = Seq()
-    override def write(epochs: Seq[EpochEntry]): Unit = this.epochs = epochs
+    override def write(epochs: Iterable[EpochEntry]): Unit = this.epochs = epochs.toSeq
     override def read(): Seq[EpochEntry] = this.epochs
   }
-  private val cache = new LeaderEpochFileCache(tp, logEndOffset _, checkpoint)
+  private val cache = new LeaderEpochFileCache(tp, () => logEndOffset, checkpoint)
+
+  @Test
+  def testPreviousEpoch(): Unit = {
+    assertEquals(None, cache.previousEpoch)
+
+    cache.assign(epoch = 2, startOffset = 10)
+    assertEquals(None, cache.previousEpoch)
+
+    cache.assign(epoch = 4, startOffset = 15)
+    assertEquals(Some(2), cache.previousEpoch)
+
+    cache.assign(epoch = 10, startOffset = 20)
+    assertEquals(Some(4), cache.previousEpoch)
+
+    cache.truncateFromEnd(18)
+    assertEquals(Some(2), cache.previousEpoch)
+  }
 
   @Test
   def shouldAddEpochAndMessageOffsetToCache() = {
@@ -119,13 +137,13 @@ class LeaderEpochFileCacheTest {
   }
 
   @Test
-  def shouldReturnUnsupportedIfNoEpochRecorded(){
+  def shouldReturnUnsupportedIfNoEpochRecorded(): Unit = {
     //Then
     assertEquals((UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET), cache.endOffsetFor(0))
   }
 
   @Test
-  def shouldReturnUnsupportedIfNoEpochRecordedAndUndefinedEpochRequested(){
+  def shouldReturnUnsupportedIfNoEpochRecordedAndUndefinedEpochRequested(): Unit = {
     logEndOffset = 73
 
     //When (say a follower on older message format version) sends request for UNDEFINED_EPOCH
@@ -137,7 +155,7 @@ class LeaderEpochFileCacheTest {
   }
 
   @Test
-  def shouldReturnFirstEpochIfRequestedEpochLessThanFirstEpoch(){
+  def shouldReturnFirstEpochIfRequestedEpochLessThanFirstEpoch(): Unit = {
     cache.assign(epoch = 5, startOffset = 11)
     cache.assign(epoch = 6, startOffset = 12)
     cache.assign(epoch = 7, startOffset = 13)
@@ -178,7 +196,7 @@ class LeaderEpochFileCacheTest {
   }
 
   @Test
-  def shouldReturnNextAvailableEpochIfThereIsNoExactEpochForTheOneRequested(){
+  def shouldReturnNextAvailableEpochIfThereIsNoExactEpochForTheOneRequested(): Unit = {
     //When
     cache.assign(epoch = 0, startOffset = 10)
     cache.assign(epoch = 2, startOffset = 13)
@@ -225,17 +243,17 @@ class LeaderEpochFileCacheTest {
   }
 
   @Test
-  def shouldPersistEpochsBetweenInstances(){
+  def shouldPersistEpochsBetweenInstances(): Unit = {
     val checkpointPath = TestUtils.tempFile().getAbsolutePath
     val checkpoint = new LeaderEpochCheckpointFile(new File(checkpointPath))
 
     //Given
-    val cache = new LeaderEpochFileCache(tp, logEndOffset _, checkpoint)
+    val cache = new LeaderEpochFileCache(tp, () => logEndOffset, checkpoint)
     cache.assign(epoch = 2, startOffset = 6)
 
     //When
     val checkpoint2 = new LeaderEpochCheckpointFile(new File(checkpointPath))
-    val cache2 = new LeaderEpochFileCache(tp, logEndOffset _, checkpoint2)
+    val cache2 = new LeaderEpochFileCache(tp, () => logEndOffset, checkpoint2)
 
     //Then
     assertEquals(1, cache2.epochEntries.size)
@@ -437,7 +455,7 @@ class LeaderEpochFileCacheTest {
     cache.assign(epoch = 3, startOffset = 8)
     cache.assign(epoch = 4, startOffset = 11)
 
-    //When we clear from a postition between offset 8 & offset 11
+    //When we clear from a position between offset 8 & offset 11
     cache.truncateFromStart(startOffset = 9)
 
     //Then we should update the middle epoch entry's offset
@@ -451,10 +469,10 @@ class LeaderEpochFileCacheTest {
     cache.assign(epoch = 1, startOffset = 7)
     cache.assign(epoch = 2, startOffset = 10)
 
-    //When we clear from a postition between offset 0 & offset 7
+    //When we clear from a position between offset 0 & offset 7
     cache.truncateFromStart(startOffset = 5)
 
-    //Then we should keeep epoch 0 but update the offset appropriately
+    //Then we should keep epoch 0 but update the offset appropriately
     assertEquals(ListBuffer(EpochEntry(0,5), EpochEntry(1, 7), EpochEntry(2, 10)), cache.epochEntries)
   }
 
@@ -509,7 +527,7 @@ class LeaderEpochFileCacheTest {
     cache.assign(epoch = 4, startOffset = 11)
 
     //When reset to offset on epoch boundary
-    cache.truncateFromEnd(endOffset = UNDEFINED_EPOCH_OFFSET)
+    cache.truncateFromStart(startOffset = UNDEFINED_EPOCH_OFFSET)
 
     //Then should do nothing
     assertEquals(3, cache.epochEntries.size)

@@ -45,18 +45,26 @@ object OffsetCheckpointFile {
 }
 
 trait OffsetCheckpoint {
-  def write(epochs: Seq[EpochEntry])
+  def write(epochs: Seq[EpochEntry]): Unit
   def read(): Seq[EpochEntry]
 }
 
 /**
-  * This class persists a map of (Partition => Offsets) to a file (for a certain replica)
-  */
+ * This class persists a map of (Partition => Offsets) to a file (for a certain replica)
+ *
+ * The format in the offset checkpoint file is like this:
+ *  -----checkpoint file begin------
+ *  0                <- OffsetCheckpointFile.currentVersion
+ *  2                <- following entries size
+ *  tp1  par1  1     <- the format is: TOPIC  PARTITION  OFFSET
+ *  tp1  par2  2
+ *  -----checkpoint file end----------
+ */
 class OffsetCheckpointFile(val file: File, logDirFailureChannel: LogDirFailureChannel = null) {
   val checkpoint = new CheckpointFile[(TopicPartition, Long)](file, OffsetCheckpointFile.CurrentVersion,
     OffsetCheckpointFile.Formatter, logDirFailureChannel, file.getParent)
 
-  def write(offsets: Map[TopicPartition, Long]): Unit = checkpoint.write(offsets.toSeq)
+  def write(offsets: Map[TopicPartition, Long]): Unit = checkpoint.write(offsets)
 
   def read(): Map[TopicPartition, Long] = checkpoint.read().toMap
 

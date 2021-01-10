@@ -21,9 +21,13 @@ package org.apache.kafka.streams.scala
 
 import java.util
 
-import org.apache.kafka.common.serialization.{Deserializer, Serde, Serializer, Serdes => JSerdes}
+import org.apache.kafka.common.serialization.{Deserializer, Serde, Serdes => JSerdes, Serializer}
 import org.apache.kafka.streams.kstream.WindowedSerdes
 
+@deprecated(
+  "Use org.apache.kafka.streams.scala.serialization.Serdes. For WindowedSerdes.TimeWindowedSerde, use explicit constructors.",
+  "2.7.0"
+)
 object Serdes {
   implicit def String: Serde[String] = JSerdes.String()
   implicit def Long: Serde[Long] = JSerdes.Long().asInstanceOf[Serde[Long]]
@@ -37,9 +41,11 @@ object Serdes {
   implicit def Integer: Serde[Int] = JSerdes.Integer().asInstanceOf[Serde[Int]]
   implicit def JavaInteger: Serde[java.lang.Integer] = JSerdes.Integer()
 
-  implicit def timeWindowedSerde[T]: WindowedSerdes.TimeWindowedSerde[T] = new WindowedSerdes.TimeWindowedSerde[T]()
-  implicit def sessionWindowedSerde[T]: WindowedSerdes.SessionWindowedSerde[T] =
-    new WindowedSerdes.SessionWindowedSerde[T]()
+  implicit def timeWindowedSerde[T](implicit tSerde: Serde[T]): WindowedSerdes.TimeWindowedSerde[T] =
+    new WindowedSerdes.TimeWindowedSerde[T](tSerde)
+
+  implicit def sessionWindowedSerde[T](implicit tSerde: Serde[T]): WindowedSerdes.SessionWindowedSerde[T] =
+    new WindowedSerdes.SessionWindowedSerde[T](tSerde)
 
   def fromFn[T >: Null](serializer: T => Array[Byte], deserializer: Array[Byte] => Option[T]): Serde[T] =
     JSerdes.serdeFrom(

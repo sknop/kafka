@@ -21,20 +21,22 @@ import java.util.UUID
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import java.util.concurrent.{ArrayBlockingQueue, ConcurrentLinkedQueue, CountDownLatch, Executors, Semaphore, TimeUnit}
 
-import com.yammer.metrics.Metrics
+import scala.collection.Seq
 import com.yammer.metrics.core.{Gauge, Meter, MetricName}
+import kafka.server.KafkaConfig
+import kafka.metrics.KafkaYammerMetrics
 import kafka.zk.ZooKeeperTestHarness
 import org.apache.kafka.common.security.JaasUtils
 import org.apache.kafka.common.utils.Time
 import org.apache.zookeeper.KeeperException.{Code, NoNodeException}
 import org.apache.zookeeper.Watcher.Event.{EventType, KeeperState}
 import org.apache.zookeeper.ZooKeeper.States
+import org.apache.zookeeper.client.ZKClientConfig
 import org.apache.zookeeper.{CreateMode, WatchedEvent, ZooDefs}
-import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertTrue}
+import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertTrue, assertThrows, fail}
 import org.junit.{After, Before, Test}
-import org.scalatest.Assertions.{fail, intercept}
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 class ZooKeeperClientTest extends ZooKeeperTestHarness {
   private val mockPath = "/foo"
@@ -43,7 +45,7 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
   private var zooKeeperClient: ZooKeeperClient = _
 
   @Before
-  override def setUp() {
+  override def setUp(): Unit = {
     ZooKeeperTestHarness.verifyNoUnexpectedThreads("@Before")
     cleanMetricsRegistry()
     super.setUp()
@@ -52,7 +54,7 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
   }
 
   @After
-  override def tearDown() {
+  override def tearDown(): Unit = {
     if (zooKeeperClient != null)
       zooKeeperClient.close()
     super.tearDown()
@@ -76,11 +78,11 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
     .map(_.getName)
     .filter(t => t.contains("SendThread()"))
 
-  @Test(expected = classOf[ZooKeeperClientTimeoutException])
+  @Test
   def testConnectionTimeout(): Unit = {
     zookeeper.shutdown()
-    new ZooKeeperClient(zkConnect, zkSessionTimeout, connectionTimeoutMs = 10, Int.MaxValue, time, "testMetricGroup",
-      "testMetricType").close()
+    assertThrows(classOf[ZooKeeperClientTimeoutException], () => new ZooKeeperClient(zkConnect, zkSessionTimeout,
+      connectionTimeoutMs = 10, Int.MaxValue, time, "testMetricGroup", "testMetricType").close())
   }
 
   @Test
@@ -98,12 +100,34 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
   }
 
   @Test
+  def testConnectionViaNettyClient(): Unit = {
+    // Confirm that we can explicitly set client connection configuration, which is necessary for TLS.
+    // TLS connectivity itself is tested in system tests rather than here to avoid having to add TLS support
+    // to kafka.zk.EmbeddedZoopeeper
+    val clientConfig = new ZKClientConfig()
+    val propKey = KafkaConfig.ZkClientCnxnSocketProp
+    val propVal = "org.apache.zookeeper.ClientCnxnSocketNetty"
+    KafkaConfig.setZooKeeperClientProperty(clientConfig, propKey, propVal)
+    val client = new ZooKeeperClient(zkConnect, zkSessionTimeout, zkConnectionTimeout, Int.MaxValue, time, "testMetricGroup",
+      "testMetricType", None, Some(clientConfig))
+    try {
+      assertEquals(Some(propVal), KafkaConfig.getZooKeeperClientProperty(client.getClientConfig, propKey))
+      // For a sanity check, make sure a bad client connection socket class name generates an exception
+      val badClientConfig = new ZKClientConfig()
+      KafkaConfig.setZooKeeperClientProperty(badClientConfig, propKey, propVal + "BadClassName")
+      assertThrows(classOf[Exception],
+        () => new ZooKeeperClient(zkConnect, zkSessionTimeout, zkConnectionTimeout, Int.MaxValue, time, "testMetricGroup",
+            "testMetricType", None, Some(badClientConfig)))
+    } finally {
+      client.close()
+    }
+  }
+
+  @Test
   def testDeleteNonExistentZNode(): Unit = {
     val deleteResponse = zooKeeperClient.handleRequest(DeleteRequest(mockPath, -1))
     assertEquals("Response code should be NONODE", Code.NONODE, deleteResponse.resultCode)
-    intercept[NoNodeException] {
-      deleteResponse.maybeThrow()
-    }
+    assertThrows(classOf[NoNodeException], () => deleteResponse.maybeThrow())
   }
 
   @Test
@@ -123,7 +147,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testExistsExistingZNode(): Unit = {
-    import scala.collection.JavaConverters._
     val createResponse = zooKeeperClient.handleRequest(CreateRequest(mockPath, Array.empty[Byte],
       ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
     assertEquals("Response code for create should be OK", Code.OK, createResponse.resultCode)
@@ -139,7 +162,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testGetDataExistingZNode(): Unit = {
-    import scala.collection.JavaConverters._
     val data = bytes
     val createResponse = zooKeeperClient.handleRequest(CreateRequest(mockPath, data, ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala,
       CreateMode.PERSISTENT))
@@ -157,7 +179,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testSetDataExistingZNode(): Unit = {
-    import scala.collection.JavaConverters._
     val data = bytes
     val createResponse = zooKeeperClient.handleRequest(CreateRequest(mockPath, Array.empty[Byte],
       ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
@@ -177,7 +198,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testGetAclExistingZNode(): Unit = {
-    import scala.collection.JavaConverters._
     val createResponse = zooKeeperClient.handleRequest(CreateRequest(mockPath, Array.empty[Byte], ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
     assertEquals("Response code for create should be OK", Code.OK, createResponse.resultCode)
     val getAclResponse = zooKeeperClient.handleRequest(GetAclRequest(mockPath))
@@ -187,31 +207,28 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testSetAclNonExistentZNode(): Unit = {
-    import scala.collection.JavaConverters._
     val setAclResponse = zooKeeperClient.handleRequest(SetAclRequest(mockPath, ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, -1))
     assertEquals("Response code should be NONODE", Code.NONODE, setAclResponse.resultCode)
   }
 
   @Test
   def testGetChildrenNonExistentZNode(): Unit = {
-    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath))
+    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath, registerWatch = true))
     assertEquals("Response code should be NONODE", Code.NONODE, getChildrenResponse.resultCode)
   }
 
   @Test
   def testGetChildrenExistingZNode(): Unit = {
-    import scala.collection.JavaConverters._
     val createResponse = zooKeeperClient.handleRequest(CreateRequest(mockPath, Array.empty[Byte],
       ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
     assertEquals("Response code for create should be OK", Code.OK, createResponse.resultCode)
-    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath))
+    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath, registerWatch = true))
     assertEquals("Response code for getChildren should be OK", Code.OK, getChildrenResponse.resultCode)
     assertEquals("getChildren should return no children", Seq.empty[String], getChildrenResponse.children)
   }
 
   @Test
   def testGetChildrenExistingZNodeWithChildren(): Unit = {
-    import scala.collection.JavaConverters._
     val child1 = "child1"
     val child2 = "child2"
     val child1Path = mockPath + "/" + child1
@@ -226,14 +243,13 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
       ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
     assertEquals("Response code for create child2 should be OK", Code.OK, createResponseChild2.resultCode)
 
-    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath))
+    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath, registerWatch = true))
     assertEquals("Response code for getChildren should be OK", Code.OK, getChildrenResponse.resultCode)
     assertEquals("getChildren should return two children", Seq(child1, child2), getChildrenResponse.children.sorted)
   }
 
   @Test
   def testPipelinedGetData(): Unit = {
-    import scala.collection.JavaConverters._
     val createRequests = (1 to 3).map(x => CreateRequest("/" + x, (x * 2).toString.getBytes, ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
     val createResponses = createRequests.map(zooKeeperClient.handleRequest)
     createResponses.foreach(createResponse => assertEquals("Response code for create should be OK", Code.OK, createResponse.resultCode))
@@ -249,7 +265,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testMixedPipeline(): Unit = {
-    import scala.collection.JavaConverters._
     val createResponse = zooKeeperClient.handleRequest(CreateRequest(mockPath, Array.empty[Byte],
       ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
     assertEquals("Response code for create should be OK", Code.OK, createResponse.resultCode)
@@ -263,7 +278,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testZNodeChangeHandlerForCreation(): Unit = {
-    import scala.collection.JavaConverters._
     val znodeChangeHandlerCountDownLatch = new CountDownLatch(1)
     val zNodeChangeHandler = new ZNodeChangeHandler {
       override def handleCreation(): Unit = {
@@ -283,7 +297,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testZNodeChangeHandlerForDeletion(): Unit = {
-    import scala.collection.JavaConverters._
     val znodeChangeHandlerCountDownLatch = new CountDownLatch(1)
     val zNodeChangeHandler = new ZNodeChangeHandler {
       override def handleDeletion(): Unit = {
@@ -305,7 +318,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testZNodeChangeHandlerForDataChange(): Unit = {
-    import scala.collection.JavaConverters._
     val znodeChangeHandlerCountDownLatch = new CountDownLatch(1)
     val zNodeChangeHandler = new ZNodeChangeHandler {
       override def handleDataChange(): Unit = {
@@ -405,7 +417,6 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
   @Test
   def testZNodeChildChangeHandlerForChildChange(): Unit = {
-    import scala.collection.JavaConverters._
     val zNodeChildChangeHandlerCountDownLatch = new CountDownLatch(1)
     val zNodeChildChangeHandler = new ZNodeChildChangeHandler {
       override def handleChildChange(): Unit = {
@@ -416,14 +427,42 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
 
     val child1 = "child1"
     val child1Path = mockPath + "/" + child1
-    val createResponse = zooKeeperClient.handleRequest(CreateRequest(mockPath, Array.empty[Byte], ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
+    val createResponse = zooKeeperClient.handleRequest(
+      CreateRequest(mockPath, Array.empty[Byte], ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
     assertEquals("Response code for create should be OK", Code.OK, createResponse.resultCode)
     zooKeeperClient.registerZNodeChildChangeHandler(zNodeChildChangeHandler)
-    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath))
+    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath, registerWatch = true))
     assertEquals("Response code for getChildren should be OK", Code.OK, getChildrenResponse.resultCode)
-    val createResponseChild1 = zooKeeperClient.handleRequest(CreateRequest(child1Path, Array.empty[Byte], ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
+    val createResponseChild1 = zooKeeperClient.handleRequest(
+      CreateRequest(child1Path, Array.empty[Byte], ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
     assertEquals("Response code for create child1 should be OK", Code.OK, createResponseChild1.resultCode)
-    assertTrue("Failed to receive child change notification", zNodeChildChangeHandlerCountDownLatch.await(5, TimeUnit.SECONDS))
+    assertTrue("Failed to receive child change notification",
+      zNodeChildChangeHandlerCountDownLatch.await(5, TimeUnit.SECONDS))
+  }
+
+  @Test
+  def testZNodeChildChangeHandlerForChildChangeNotTriggered(): Unit = {
+    val zNodeChildChangeHandlerCountDownLatch = new CountDownLatch(1)
+    val zNodeChildChangeHandler = new ZNodeChildChangeHandler {
+      override def handleChildChange(): Unit = {
+        zNodeChildChangeHandlerCountDownLatch.countDown()
+      }
+      override val path: String = mockPath
+    }
+
+    val child1 = "child1"
+    val child1Path = mockPath + "/" + child1
+    val createResponse = zooKeeperClient.handleRequest(
+      CreateRequest(mockPath, Array.empty[Byte], ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
+    assertEquals("Response code for create should be OK", Code.OK, createResponse.resultCode)
+    zooKeeperClient.registerZNodeChildChangeHandler(zNodeChildChangeHandler)
+    val getChildrenResponse = zooKeeperClient.handleRequest(GetChildrenRequest(mockPath, registerWatch = false))
+    assertEquals("Response code for getChildren should be OK", Code.OK, getChildrenResponse.resultCode)
+    val createResponseChild1 = zooKeeperClient.handleRequest(
+      CreateRequest(child1Path, Array.empty[Byte], ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala, CreateMode.PERSISTENT))
+    assertEquals("Response code for create child1 should be OK", Code.OK, createResponseChild1.resultCode)
+    assertFalse("Child change notification received",
+      zNodeChildChangeHandlerCountDownLatch.await(100, TimeUnit.MILLISECONDS))
   }
 
   @Test
@@ -542,7 +581,7 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
         }
         private def verifyHandlerThread(): Unit = {
           val threadName = Thread.currentThread.getName
-          assertTrue(s"Unexpected thread + $threadName", threadName.startsWith(zooKeeperClient.expiryScheduler.threadNamePrefix))
+          assertTrue(s"Unexpected thread + $threadName", threadName.startsWith(zooKeeperClient.reinitializeScheduler.threadNamePrefix))
         }
       })
 
@@ -582,7 +621,7 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
       zooKeeperClient.close()
       responseExecutor.shutdownNow()
     }
-    assertFalse("Expiry executor not shutdown", zooKeeperClient.expiryScheduler.isStarted)
+    assertFalse("Expiry executor not shutdown", zooKeeperClient.reinitializeScheduler.isStarted)
   }
 
   @Test
@@ -590,9 +629,9 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
     val semaphore = new Semaphore(0)
     val closeExecutor = Executors.newSingleThreadExecutor
     try {
-      zooKeeperClient.expiryScheduler.schedule("test", () => semaphore.acquireUninterruptibly(),
+      zooKeeperClient.reinitializeScheduler.schedule("test", () => semaphore.acquireUninterruptibly(),
         delay = 0, period = -1, TimeUnit.SECONDS)
-      zooKeeperClient.scheduleSessionExpiryHandler()
+      zooKeeperClient.scheduleReinitialize("session-expired", "Session expired.", delayMs = 0L)
       val closeFuture = closeExecutor.submit(new Runnable {
         override def run(): Unit = {
           zooKeeperClient.close()
@@ -602,19 +641,38 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
       assertTrue(zooKeeperClient.currentZooKeeper.getState.isAlive) // Client should be closed after expiry handler
       semaphore.release()
       closeFuture.get(10, TimeUnit.SECONDS)
-      assertFalse("Expiry executor not shutdown", zooKeeperClient.expiryScheduler.isStarted)
+      assertFalse("Expiry executor not shutdown", zooKeeperClient.reinitializeScheduler.isStarted)
     } finally {
       closeExecutor.shutdownNow()
     }
+  }
+
+  @Test
+  def testReinitializeAfterAuthFailure(): Unit = {
+    val sessionInitializedCountDownLatch = new CountDownLatch(1)
+    val changeHandler = new StateChangeHandler {
+      override val name = this.getClass.getName
+      override def beforeInitializingSession(): Unit = {
+        sessionInitializedCountDownLatch.countDown()
+      }
+    }
+
+    zooKeeperClient.close()
+    zooKeeperClient = new ZooKeeperClient(zkConnect, zkSessionTimeout, zkConnectionTimeout, Int.MaxValue, time,
+      "testMetricGroup", "testMetricType")
+    zooKeeperClient.registerStateChangeHandler(changeHandler)
+
+    zooKeeperClient.ZooKeeperClientWatcher.process(new WatchedEvent(EventType.None, KeeperState.AuthFailed, null))
+    assertTrue("Failed to receive session initializing notification", sessionInitializedCountDownLatch.await(5, TimeUnit.SECONDS))
   }
 
   def isExpectedMetricName(metricName: MetricName, name: String): Boolean =
     metricName.getName == name && metricName.getGroup == "testMetricGroup" && metricName.getType == "testMetricType"
 
   @Test
-  def testZooKeeperStateChangeRateMetrics() {
-    def checkMeterCount(name: String, expected: Long) {
-      val meter = Metrics.defaultRegistry.allMetrics.asScala.collectFirst {
+  def testZooKeeperStateChangeRateMetrics(): Unit = {
+    def checkMeterCount(name: String, expected: Long): Unit = {
+      val meter = KafkaYammerMetrics.defaultRegistry.allMetrics.asScala.collectFirst {
         case (metricName, meter: Meter) if isExpectedMetricName(metricName, name) => meter
       }.getOrElse(sys.error(s"Unable to find meter with name $name"))
       assertEquals(s"Unexpected meter count for $name", expected, meter.count)
@@ -637,7 +695,7 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
   @Test
   def testZooKeeperSessionStateMetric(): Unit = {
     def gaugeValue(name: String): Option[String] = {
-      Metrics.defaultRegistry.allMetrics.asScala.collectFirst {
+      KafkaYammerMetrics.defaultRegistry.allMetrics.asScala.collectFirst {
         case (metricName, gauge: Gauge[_]) if isExpectedMetricName(metricName, name) => gauge.value.asInstanceOf[String]
       }
     }
@@ -651,9 +709,9 @@ class ZooKeeperClientTest extends ZooKeeperTestHarness {
     assertEquals(States.CLOSED, zooKeeperClient.connectionState)
   }
 
-  private def cleanMetricsRegistry() {
-    val metrics = Metrics.defaultRegistry
-    metrics.allMetrics.keySet.asScala.foreach(metrics.removeMetric)
+  private def cleanMetricsRegistry(): Unit = {
+    val metrics = KafkaYammerMetrics.defaultRegistry
+    metrics.allMetrics.keySet.forEach(metrics.removeMetric)
   }
 
   private def bytes = UUID.randomUUID().toString.getBytes(StandardCharsets.UTF_8)

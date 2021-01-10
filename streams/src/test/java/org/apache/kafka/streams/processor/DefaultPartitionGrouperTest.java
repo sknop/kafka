@@ -31,7 +31,9 @@ import java.util.Set;
 
 import static org.apache.kafka.common.utils.Utils.mkSet;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
+@SuppressWarnings("deprecation")
 public class DefaultPartitionGrouperTest {
 
     private final List<PartitionInfo> infos = Arrays.asList(
@@ -91,7 +93,7 @@ public class DefaultPartitionGrouperTest {
         assertEquals(expectedPartitionsForTask, grouper.partitionGroups(topicGroups, metadata));
     }
 
-    @Test(expected = RuntimeException.class)
+    @Test
     public void shouldNotCreateAnyTasksBecauseOneTopicHasUnknownPartitions() {
         final PartitionGrouper grouper = new DefaultPartitionGrouper();
         final Map<Integer, Set<String>> topicGroups = new HashMap<>();
@@ -99,6 +101,6 @@ public class DefaultPartitionGrouperTest {
         final int topicGroupId = 0;
     
         topicGroups.put(topicGroupId, mkSet("topic1", "unknownTopic", "topic2"));
-        grouper.partitionGroups(topicGroups, metadata);
+        assertThrows(RuntimeException.class, () -> grouper.partitionGroups(topicGroups, metadata));
     }
 }

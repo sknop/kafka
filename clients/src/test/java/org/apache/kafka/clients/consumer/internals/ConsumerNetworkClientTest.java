@@ -36,6 +36,7 @@ import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.HeartbeatRequest;
 import org.apache.kafka.common.requests.HeartbeatResponse;
 import org.apache.kafka.common.requests.MetadataResponse;
+import org.apache.kafka.common.requests.RequestTestUtils;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.test.TestUtils;
@@ -48,7 +49,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -87,7 +88,7 @@ public class ConsumerNetworkClientTest {
     }
 
     @Test
-    public void sendWithinBlackoutPeriodAfterAuthenticationFailure() {
+    public void sendWithinBackoffPeriodAfterAuthenticationFailure() {
         client.authenticationFailed(node, 300);
         client.prepareResponse(heartbeatResponse(Errors.NONE));
         final RequestFuture<ClientResponse> future = consumerClient.send(node, heartbeat());
@@ -95,7 +96,7 @@ public class ConsumerNetworkClientTest {
         assertTrue(future.failed());
         assertTrue("Expected only an authentication error.", future.exception() instanceof AuthenticationException);
 
-        time.sleep(30); // wait less than the blackout period
+        time.sleep(30); // wait less than the backoff period
         assertTrue(client.connectionFailed(node));
 
         final RequestFuture<ClientResponse> future2 = consumerClient.send(node, heartbeat());
@@ -236,36 +237,36 @@ public class ConsumerNetworkClientTest {
 
     @Test
     public void testAuthenticationExceptionPropagatedFromMetadata() {
-        metadata.failedUpdate(time.milliseconds(), new AuthenticationException("Authentication failed"));
+        metadata.fatalError(new AuthenticationException("Authentication failed"));
         try {
             consumerClient.poll(time.timer(Duration.ZERO));
             fail("Expected authentication error thrown");
         } catch (AuthenticationException e) {
             // After the exception is raised, it should have been cleared
-            assertNull(metadata.getAndClearMetadataException());
+            metadata.maybeThrowAnyException();
         }
     }
 
-    @Test(expected = InvalidTopicException.class)
+    @Test
     public void testInvalidTopicExceptionPropagatedFromMetadata() {
-        MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("clusterId", 1,
+        MetadataResponse metadataResponse = RequestTestUtils.metadataUpdateWith("clusterId", 1,
                 Collections.singletonMap("topic", Errors.INVALID_TOPIC_EXCEPTION), Collections.emptyMap());
-        metadata.update(metadataResponse, time.milliseconds());
-        consumerClient.poll(time.timer(Duration.ZERO));
+        metadata.updateWithCurrentRequestVersion(metadataResponse, false, time.milliseconds());
+        assertThrows(InvalidTopicException.class, () -> consumerClient.poll(time.timer(Duration.ZERO)));
     }
 
-    @Test(expected = TopicAuthorizationException.class)
+    @Test
     public void testTopicAuthorizationExceptionPropagatedFromMetadata() {
-        MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("clusterId", 1,
+        MetadataResponse metadataResponse = RequestTestUtils.metadataUpdateWith("clusterId", 1,
                 Collections.singletonMap("topic", Errors.TOPIC_AUTHORIZATION_FAILED), Collections.emptyMap());
-        metadata.update(metadataResponse, time.milliseconds());
-        consumerClient.poll(time.timer(Duration.ZERO));
+        metadata.updateWithCurrentRequestVersion(metadataResponse, false, time.milliseconds());
+        assertThrows(TopicAuthorizationException.class, () -> consumerClient.poll(time.timer(Duration.ZERO)));
     }
 
     @Test
     public void testMetadataFailurePropagated() {
         KafkaException metadataException = new KafkaException();
-        metadata.failedUpdate(time.milliseconds(), metadataException);
+        metadata.fatalError(metadataException);
         try {
             consumerClient.poll(time.timer(Duration.ZERO));
             fail("Expected poll to throw exception");

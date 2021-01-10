@@ -22,15 +22,15 @@ import java.net.InetAddress
 import java.util
 import java.util.Collections
 import java.util.concurrent.{DelayQueue, TimeUnit}
-
 import kafka.network.RequestChannel
 import kafka.network.RequestChannel.{EndThrottlingResponse, Response, StartThrottlingResponse}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.memory.MemoryPool
 import org.apache.kafka.common.metrics.MetricConfig
+import org.apache.kafka.common.network.ClientInformation
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.requests.FetchRequest.PartitionData
-import org.apache.kafka.common.requests.{AbstractRequest, FetchRequest, RequestContext, RequestHeader}
+import org.apache.kafka.common.requests.{AbstractRequest, FetchRequest, RequestContext, RequestHeader, RequestTestUtils}
 import org.apache.kafka.common.security.auth.{KafkaPrincipal, SecurityProtocol}
 import org.apache.kafka.common.utils.MockTime
 import org.easymock.EasyMock
@@ -49,32 +49,33 @@ class ThrottledChannelExpirationTest {
                                                  listenerName: ListenerName = ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT)): (T, RequestChannel.Request) = {
 
     val request = builder.build()
-    val buffer = request.serialize(new RequestHeader(builder.apiKey, request.version, "", 0))
+    val buffer = RequestTestUtils.serializeRequestWithHeader(
+      new RequestHeader(builder.apiKey, request.version, "", 0), request)
     val requestChannelMetrics: RequestChannel.Metrics = EasyMock.createNiceMock(classOf[RequestChannel.Metrics])
 
     // read the header from the buffer first so that the body can be read next from the Request constructor
     val header = RequestHeader.parse(buffer)
     val context = new RequestContext(header, "1", InetAddress.getLocalHost, KafkaPrincipal.ANONYMOUS,
-      listenerName, SecurityProtocol.PLAINTEXT)
+      listenerName, SecurityProtocol.PLAINTEXT, ClientInformation.EMPTY, false)
     (request, new RequestChannel.Request(processor = 1, context = context, startTimeNanos =  0, MemoryPool.NONE, buffer,
       requestChannelMetrics))
   }
 
   def callback(response: Response): Unit = {
-    response match {
+    (response: @unchecked) match {
       case _: StartThrottlingResponse => numCallbacksForStartThrottling += 1
       case _: EndThrottlingResponse => numCallbacksForEndThrottling += 1
     }
   }
 
   @Before
-  def beforeMethod() {
+  def beforeMethod(): Unit = {
     numCallbacksForStartThrottling = 0
     numCallbacksForEndThrottling = 0
   }
 
   @Test
-  def testCallbackInvocationAfterExpiration() {
+  def testCallbackInvocationAfterExpiration(): Unit = {
     val clientMetrics = new ClientQuotaManager(ClientQuotaManagerConfig(), metrics, QuotaType.Produce, time, "")
 
     val delayQueue = new DelayQueue[ThrottledChannel]()
@@ -107,7 +108,7 @@ class ThrottledChannelExpirationTest {
   }
 
   @Test
-  def testThrottledChannelDelay() {
+  def testThrottledChannelDelay(): Unit = {
     val t1: ThrottledChannel = new ThrottledChannel(request, time, 10, callback)
     val t2: ThrottledChannel = new ThrottledChannel(request, time, 20, callback)
     val t3: ThrottledChannel = new ThrottledChannel(request, time, 20, callback)

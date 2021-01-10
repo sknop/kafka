@@ -43,13 +43,13 @@ public abstract class AbstractRecords implements Records {
         return true;
     }
 
-    public boolean firstBatchHasCompatibleMagic(byte magic) {
+    public RecordBatch firstBatch() {
         Iterator<? extends RecordBatch> iterator = batches().iterator();
 
         if (!iterator.hasNext())
-            return true;
+            return null;
 
-        return iterator.next().magic() <= magic;
+        return iterator.next();
     }
 
     /**
@@ -62,8 +62,8 @@ public abstract class AbstractRecords implements Records {
     }
 
     @Override
-    public RecordsSend toSend(String destination) {
-        return new DefaultRecordsSend(destination, this);
+    public DefaultRecordsSend toSend() {
+        return new DefaultRecordsSend(this);
     }
 
     private Iterator<Record> recordsIterator() {

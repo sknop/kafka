@@ -17,10 +17,10 @@
 
 package kafka.cluster
 
-import kafka.log.{Log}
+import kafka.log.Log
+import kafka.server.LogOffsetMetadata
 import kafka.utils.Logging
-import kafka.server.{LogOffsetMetadata}
-import org.apache.kafka.common.{TopicPartition}
+import org.apache.kafka.common.TopicPartition
 
 class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Logging {
   // the log end offset value, kept in all replicas;
@@ -75,7 +75,6 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
     _logEndOffsetMetadata = followerFetchOffsetMetadata
     lastFetchLeaderLogEndOffset = leaderEndOffset
     lastFetchTimeMs = followerFetchTimeMs
-    trace(s"Updated state of replica to $this")
   }
 
   def resetLastCaughtUpTime(curLeaderLogEndOffset: Long, curTimeMs: Long, lastCaughtUpTimeMs: Long): Unit = {

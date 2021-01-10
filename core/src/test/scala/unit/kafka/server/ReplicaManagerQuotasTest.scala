@@ -20,7 +20,7 @@ import java.io.File
 import java.util.{Optional, Properties}
 import java.util.concurrent.atomic.AtomicBoolean
 
-import kafka.cluster.{Partition, Replica}
+import kafka.cluster.Partition
 import kafka.log.{Log, LogManager, LogOffsetSnapshot}
 import kafka.utils._
 import kafka.zk.KafkaZkClient
@@ -30,10 +30,11 @@ import org.apache.kafka.common.record.{CompressionType, MemoryRecords, SimpleRec
 import org.apache.kafka.common.requests.FetchRequest.PartitionData
 import org.easymock.EasyMock
 import EasyMock._
+import kafka.server.QuotaFactory.QuotaManagers
 import org.junit.Assert._
 import org.junit.{After, Test}
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 class ReplicaManagerQuotasTest {
   val configs = TestUtils.createBrokerConfigs(2, TestUtils.MockZkConnect).map(KafkaConfig.fromProps(_, new Properties()))
@@ -45,6 +46,7 @@ class ReplicaManagerQuotasTest {
   val fetchInfo = Seq(
     topicPartition1 -> new PartitionData(0, 0, 100, Optional.empty()),
     topicPartition2 -> new PartitionData(0, 0, 100, Optional.empty()))
+  var quotaManager: QuotaManagers = _
   var replicaManager: ReplicaManager = _
 
   @Test
@@ -64,7 +66,8 @@ class ReplicaManagerQuotasTest {
       fetchMaxBytes = Int.MaxValue,
       hardMaxBytesLimit = false,
       readPartitionInfo = fetchInfo,
-      quota = quota)
+      quota = quota,
+      clientMetadata = None)
     assertEquals("Given two partitions, with only one throttled, we should get the first", 1,
       fetch.find(_._1 == topicPartition1).get._2.info.records.batches.asScala.size)
 
@@ -89,7 +92,8 @@ class ReplicaManagerQuotasTest {
       fetchMaxBytes = Int.MaxValue,
       hardMaxBytesLimit = false,
       readPartitionInfo = fetchInfo,
-      quota = quota)
+      quota = quota,
+      clientMetadata = None)
     assertEquals("Given two partitions, with both throttled, we should get no messages", 0,
       fetch.find(_._1 == topicPartition1).get._2.info.records.batches.asScala.size)
     assertEquals("Given two partitions, with both throttled, we should get no messages", 0,
@@ -113,7 +117,8 @@ class ReplicaManagerQuotasTest {
       fetchMaxBytes = Int.MaxValue,
       hardMaxBytesLimit = false,
       readPartitionInfo = fetchInfo,
-      quota = quota)
+      quota = quota,
+      clientMetadata = None)
     assertEquals("Given two partitions, with both non-throttled, we should get both messages", 1,
       fetch.find(_._1 == topicPartition1).get._2.info.records.batches.asScala.size)
     assertEquals("Given two partitions, with both non-throttled, we should get both messages", 1,
@@ -137,7 +142,8 @@ class ReplicaManagerQuotasTest {
       fetchMaxBytes = Int.MaxValue,
       hardMaxBytesLimit = false,
       readPartitionInfo = fetchInfo,
-      quota = quota)
+      quota = quota,
+      clientMetadata = None)
     assertEquals("Given two partitions, with only one throttled, we should get the first", 1,
       fetch.find(_._1 == topicPartition1).get._2.info.records.batches.asScala.size)
 
@@ -161,12 +167,12 @@ class ReplicaManagerQuotasTest {
           .andReturn(offsetSnapshot)
 
       val replicaManager: ReplicaManager = EasyMock.createMock(classOf[ReplicaManager])
-      EasyMock.expect(replicaManager.getPartitionOrException(
-        EasyMock.anyObject[TopicPartition], EasyMock.anyBoolean()))
+      EasyMock.expect(replicaManager.getPartitionOrException(EasyMock.anyObject[TopicPartition]))
         .andReturn(partition).anyTimes()
 
-      EasyMock.expect(replicaManager.shouldLeaderThrottle(EasyMock.anyObject[ReplicaQuota], EasyMock.anyObject[TopicPartition], EasyMock.anyObject[Int]))
+      EasyMock.expect(replicaManager.shouldLeaderThrottle(EasyMock.anyObject[ReplicaQuota], EasyMock.anyObject[Partition], EasyMock.anyObject[Int]))
         .andReturn(!isReplicaInSync).anyTimes()
+      EasyMock.expect(partition.getReplica(1)).andReturn(None)
       EasyMock.replay(replicaManager, partition)
 
       val tp = new TopicPartition("t1", 0)
@@ -179,9 +185,10 @@ class ReplicaManagerQuotasTest {
         fetchIsolation = FetchLogEnd,
         isFromFollower = true,
         replicaId = 1,
-        fetchPartitionStatus = List((tp, fetchPartitionStatus)))
+        fetchPartitionStatus = List((tp, fetchPartitionStatus))
+      )
       new DelayedFetch(delayMs = 600, fetchMetadata = fetchMetadata, replicaManager = replicaManager,
-        quota = null, responseCallback = null) {
+        quota = null, clientMetadata = None, responseCallback = null) {
         override def forceComplete(): Boolean = true
       }
     }
@@ -190,7 +197,8 @@ class ReplicaManagerQuotasTest {
     assertFalse("Out of sync replica should not complete", setupDelayedFetch(isReplicaInSync = false).tryComplete())
   }
 
-  def setUpMocks(fetchInfo: Seq[(TopicPartition, PartitionData)], record: SimpleRecord = this.record, bothReplicasInSync: Boolean = false) {
+  def setUpMocks(fetchInfo: Seq[(TopicPartition, PartitionData)], record: SimpleRecord = this.record,
+                 bothReplicasInSync: Boolean = false): Unit = {
     val zkClient: KafkaZkClient = EasyMock.createMock(classOf[KafkaZkClient])
     val scheduler: KafkaScheduler = createNiceMock(classOf[KafkaScheduler])
 
@@ -205,9 +213,8 @@ class ReplicaManagerQuotasTest {
     //if we ask for len 1 return a message
     expect(log.read(anyObject(),
       maxLength = geq(1),
-      maxOffset = anyObject(),
-      minOneMessage = anyBoolean(),
-      includeAbortedTxns = EasyMock.eq(false))).andReturn(
+      isolation = anyObject(),
+      minOneMessage = anyBoolean())).andReturn(
       FetchDataInfo(
         LogOffsetMetadata(0L, 0L, 0),
         MemoryRecords.withRecords(CompressionType.NONE, record)
@@ -216,9 +223,8 @@ class ReplicaManagerQuotasTest {
     //if we ask for len = 0, return 0 messages
     expect(log.read(anyObject(),
       maxLength = EasyMock.eq(0),
-      maxOffset = anyObject(),
-      minOneMessage = anyBoolean(),
-      includeAbortedTxns = EasyMock.eq(false))).andReturn(
+      isolation = anyObject(),
+      minOneMessage = anyBoolean())).andReturn(
       FetchDataInfo(
         LogOffsetMetadata(0L, 0L, 0),
         MemoryRecords.EMPTY
@@ -233,33 +239,34 @@ class ReplicaManagerQuotasTest {
     expect(logManager.liveLogDirs).andReturn(Array.empty[File]).anyTimes()
     replay(logManager)
 
+    val alterIsrManager: AlterIsrManager = createMock(classOf[AlterIsrManager])
+
     val leaderBrokerId = configs.head.brokerId
+    quotaManager = QuotaFactory.instantiate(configs.head, metrics, time, "")
     replicaManager = new ReplicaManager(configs.head, metrics, time, zkClient, scheduler, logManager,
-      new AtomicBoolean(false), QuotaFactory.instantiate(configs.head, metrics, time, ""),
-      new BrokerTopicStats, new MetadataCache(leaderBrokerId), new LogDirFailureChannel(configs.head.logDirs.size))
+      new AtomicBoolean(false), quotaManager,
+      new BrokerTopicStats, new MetadataCache(leaderBrokerId), new LogDirFailureChannel(configs.head.logDirs.size), alterIsrManager)
 
     //create the two replicas
     for ((p, _) <- fetchInfo) {
       val partition = replicaManager.createPartition(p)
-      log.highWatermark = 5
+      log.updateHighWatermark(5)
       partition.leaderReplicaIdOpt = Some(leaderBrokerId)
       partition.setLog(log, isFutureLog = false)
 
-      val followerReplica = new Replica(configs.last.brokerId, p)
-      val allReplicas : Set[Int] = Set(leaderBrokerId, followerReplica.brokerId)
-      partition.addReplicaIfNotExists(followerReplica)
-      if (bothReplicasInSync) {
-        partition.inSyncReplicas = allReplicas
-      } else {
-        partition.inSyncReplicas = Set(leaderBrokerId)
-      }
+      partition.updateAssignmentAndIsr(
+        assignment = Seq(leaderBrokerId, configs.last.brokerId),
+        isr = if (bothReplicasInSync) Set(leaderBrokerId, configs.last.brokerId) else Set(leaderBrokerId),
+        addingReplicas = Seq.empty,
+        removingReplicas = Seq.empty
+      )
     }
   }
 
   @After
-  def tearDown() {
-    if (replicaManager != null)
-      replicaManager.shutdown(false)
+  def tearDown(): Unit = {
+    Option(replicaManager).foreach(_.shutdown(false))
+    Option(quotaManager).foreach(_.shutdown())
     metrics.close()
   }
 

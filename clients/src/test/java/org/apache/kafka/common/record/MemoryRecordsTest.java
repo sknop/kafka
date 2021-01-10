@@ -19,6 +19,8 @@ package org.apache.kafka.common.record;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.CorruptRecordException;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.apache.kafka.common.message.LeaderChangeMessage;
+import org.apache.kafka.common.message.LeaderChangeMessage.Voter;
 import org.apache.kafka.common.record.MemoryRecords.RecordFilter.BatchRetention;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.test.TestUtils;
@@ -30,8 +32,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.function.Supplier;
+import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static java.util.Arrays.asList;
 import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V2;
@@ -41,7 +44,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
 
 @RunWith(value = Parameterized.class)
@@ -443,6 +445,44 @@ public class MemoryRecordsTest {
     }
 
     @Test
+    public void testBuildLeaderChangeMessage() {
+        if (magic >= RecordBatch.MAGIC_VALUE_V2) {
+
+            final int leaderId = 5;
+            final int leaderEpoch = 20;
+            final int voterId = 6;
+
+            LeaderChangeMessage leaderChangeMessage = new LeaderChangeMessage()
+                .setLeaderId(leaderId)
+                .setVoters(Collections.singletonList(
+                    new Voter().setVoterId(voterId)));
+            MemoryRecords records = MemoryRecords.withLeaderChangeMessage(System.currentTimeMillis(),
+                leaderEpoch, leaderChangeMessage);
+
+            List<MutableRecordBatch> batches = TestUtils.toList(records.batches());
+            assertEquals(1, batches.size());
+
+            RecordBatch batch = batches.get(0);
+            assertTrue(batch.isControlBatch());
+            assertEquals(0, batch.baseOffset());
+            assertEquals(leaderEpoch, batch.partitionLeaderEpoch());
+            assertTrue(batch.isValid());
+
+            List<Record> createdRecords = TestUtils.toList(batch);
+            assertEquals(1, createdRecords.size());
+
+            Record record = createdRecords.get(0);
+            assertTrue(record.isValid());
+            assertEquals(ControlRecordType.LEADER_CHANGE, ControlRecordType.parse(record.key()));
+
+            LeaderChangeMessage deserializedMessage = ControlRecordUtils.deserializeLeaderChangeMessage(record);
+            assertEquals(leaderId, deserializedMessage.leaderId());
+            assertEquals(1, deserializedMessage.voters().size());
+            assertEquals(voterId, deserializedMessage.voters().get(0).voterId());
+        }
+    }
+
+    @Test
     public void testFilterToBatchDiscard() {
         assumeAtLeastV2OrNotZstd();
         assumeTrue(compression != CompressionType.NONE || magic >= MAGIC_VALUE_V2);
@@ -686,38 +726,6 @@ public class MemoryRecordsTest {
         assertEquals(5, records.size());
         for (Record record : records)
             assertNotNull(record.key());
-    }
-
-    @Test
-    public void testToString() {
-        assumeAtLeastV2OrNotZstd();
-
-        long timestamp = 1000000;
-        MemoryRecords memoryRecords = MemoryRecords.withRecords(magic, compression,
-                new SimpleRecord(timestamp, "key1".getBytes(), "value1".getBytes()),
-                new SimpleRecord(timestamp + 1, "key2".getBytes(), "value2".getBytes()));
-        switch (magic) {
-            case RecordBatch.MAGIC_VALUE_V0:
-                assertEquals("[(record=LegacyRecordBatch(offset=0, Record(magic=0, attributes=0, compression=NONE, " +
-                                "crc=1978725405, key=4 bytes, value=6 bytes))), (record=LegacyRecordBatch(offset=1, Record(magic=0, " +
-                                "attributes=0, compression=NONE, crc=1964753830, key=4 bytes, value=6 bytes)))]",
-                        memoryRecords.toString());
-                break;
-            case RecordBatch.MAGIC_VALUE_V1:
-                assertEquals("[(record=LegacyRecordBatch(offset=0, Record(magic=1, attributes=0, compression=NONE, " +
-                                "crc=97210616, CreateTime=1000000, key=4 bytes, value=6 bytes))), (record=LegacyRecordBatch(offset=1, " +
-                                "Record(magic=1, attributes=0, compression=NONE, crc=3535988507, CreateTime=1000001, key=4 bytes, " +
-                                "value=6 bytes)))]",
-                        memoryRecords.toString());
-                break;
-            case RecordBatch.MAGIC_VALUE_V2:
-                assertEquals("[(record=DefaultRecord(offset=0, timestamp=1000000, key=4 bytes, value=6 bytes)), " +
-                                "(record=DefaultRecord(offset=1, timestamp=1000001, key=4 bytes, value=6 bytes))]",
-                        memoryRecords.toString());
-                break;
-            default:
-                fail("Unexpected magic " + magic);
-        }
     }
 
     @Test

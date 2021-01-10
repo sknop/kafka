@@ -19,12 +19,16 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.errors.InvalidConfigurationException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.JoinGroupRequestData;
+import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.test.TestUtils;
 import org.junit.Test;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
 public class JoinGroupRequestTest {
@@ -65,14 +69,34 @@ public class JoinGroupRequestTest {
         }
     }
 
-    @Test(expected = UnsupportedVersionException.class)
+    @Test
     public void testRequestVersionCompatibilityFailBuild() {
-        new JoinGroupRequest.Builder(
-                new JoinGroupRequestData()
-                        .setGroupId("groupId")
-                        .setMemberId("consumerId")
-                        .setGroupInstanceId("groupInstanceId")
-                        .setProtocolType("consumer")
-        ).build((short) 4);
+        assertThrows(UnsupportedVersionException.class, () -> new JoinGroupRequest.Builder(
+            new JoinGroupRequestData()
+                .setGroupId("groupId")
+                .setMemberId("consumerId")
+                .setGroupInstanceId("groupInstanceId")
+                .setProtocolType("consumer")
+        ).build((short) 4));
+    }
+
+    @Test
+    public void testRebalanceTimeoutDefaultsToSessionTimeoutV0() {
+        int sessionTimeoutMs = 30000;
+
+        Struct struct = new JoinGroupRequestData()
+                .setGroupId("groupId")
+                .setMemberId("consumerId")
+                .setProtocolType("consumer")
+                .setSessionTimeoutMs(sessionTimeoutMs)
+                .toStruct((short) 0);
+
+        ByteBuffer buffer = ByteBuffer.allocate(struct.sizeOf());
+        struct.writeTo(buffer);
+        buffer.flip();
+
+        JoinGroupRequest request = JoinGroupRequest.parse(buffer, (short) 0);
+        assertEquals(sessionTimeoutMs, request.data().sessionTimeoutMs());
+        assertEquals(sessionTimeoutMs, request.data().rebalanceTimeoutMs());
     }
 }

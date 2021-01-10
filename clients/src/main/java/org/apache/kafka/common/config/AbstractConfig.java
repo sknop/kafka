@@ -53,7 +53,7 @@ public class AbstractConfig {
 
     private final ConfigDef definition;
 
-    private static final String CONFIG_PROVIDERS_CONFIG = "config.providers";
+    public static final String CONFIG_PROVIDERS_CONFIG = "config.providers";
 
     private static final String CONFIG_PROVIDERS_PARAM = ".param.";
 
@@ -106,12 +106,12 @@ public class AbstractConfig {
 
         this.originals = resolveConfigVariables(configProviderProps, (Map<String, Object>) originals);
         this.values = definition.parse(this.originals);
+        this.used = Collections.synchronizedSet(new HashSet<>());
         Map<String, Object> configUpdates = postProcessParsedConfig(Collections.unmodifiableMap(this.values));
         for (Map.Entry<String, Object> update : configUpdates.entrySet()) {
             this.values.put(update.getKey(), update.getValue());
         }
         definition.parse(this.values);
-        this.used = Collections.synchronizedSet(new HashSet<>());
         this.definition = definition;
         if (doLog)
             logAll();
@@ -201,6 +201,13 @@ public class AbstractConfig {
         return configKey.type;
     }
 
+    public String documentationOf(String key) {
+        ConfigDef.ConfigKey configKey = definition.configKeys().get(key);
+        if (configKey == null)
+            return null;
+        return configKey.documentation;
+    }
+
     public Password getPassword(String key) {
         return (Password) get(key);
     }
@@ -218,6 +225,13 @@ public class AbstractConfig {
     public Map<String, Object> originals() {
         Map<String, Object> copy = new RecordingMap<>();
         copy.putAll(originals);
+        return copy;
+    }
+
+    public Map<String, Object> originals(Map<String, Object> configOverrides) {
+        Map<String, Object> copy = new RecordingMap<>();
+        copy.putAll(originals);
+        copy.putAll(configOverrides);
         return copy;
     }
 
@@ -331,6 +345,17 @@ public class AbstractConfig {
         return new RecordingMap<>(values);
     }
 
+    public Map<String, ?> nonInternalValues() {
+        Map<String, Object> nonInternalConfigs = new RecordingMap<>();
+        values.forEach((key, value) -> {
+            ConfigDef.ConfigKey configKey = definition.configKeys().get(key);
+            if (configKey == null || !configKey.internalConfig) {
+                nonInternalConfigs.put(key, value);
+            }
+        });
+        return nonInternalConfigs;
+    }
+
     private void logAll() {
         StringBuilder b = new StringBuilder();
         b.append(getClass().getSimpleName());
@@ -355,6 +380,29 @@ public class AbstractConfig {
             log.warn("The configuration '{}' was supplied but isn't a known config.", key);
     }
 
+    private <T> T getConfiguredInstance(Object klass, Class<T> t, Map<String, Object> configPairs) {
+        if (klass == null)
+            return null;
+
+        Object o;
+        if (klass instanceof String) {
+            try {
+                o = Utils.newInstance((String) klass, t);
+            } catch (ClassNotFoundException e) {
+                throw new KafkaException("Class " + klass + " cannot be found", e);
+            }
+        } else if (klass instanceof Class<?>) {
+            o = Utils.newInstance((Class<?>) klass);
+        } else
+            throw new KafkaException("Unexpected element of type " + klass.getClass().getName() + ", expected String or Class");
+        if (!t.isInstance(o))
+            throw new KafkaException(klass + " is not an instance of " + t.getName());
+        if (o instanceof Configurable)
+            ((Configurable) o).configure(configPairs);
+
+        return t.cast(o);
+    }
+
     /**
      * Get a configured instance of the give class specified by the given configuration key. If the object implements
      * Configurable configure it using the configuration.
@@ -364,15 +412,22 @@ public class AbstractConfig {
      * @return A configured instance of the class
      */
     public <T> T getConfiguredInstance(String key, Class<T> t) {
+        return getConfiguredInstance(key, t, Collections.emptyMap());
+    }
+
+    /**
+     * Get a configured instance of the give class specified by the given configuration key. If the object implements
+     * Configurable configure it using the configuration.
+     *
+     * @param key The configuration key for the class
+     * @param t The interface the class should implement
+     * @param configOverrides override origin configs
+     * @return A configured instance of the class
+     */
+    public <T> T getConfiguredInstance(String key, Class<T> t, Map<String, Object> configOverrides) {
         Class<?> c = getClass(key);
-        if (c == null)
-            return null;
-        Object o = Utils.newInstance(c);
-        if (!t.isInstance(o))
-            throw new KafkaException(c.getName() + " is not an instance of " + t.getName());
-        if (o instanceof Configurable)
-            ((Configurable) o).configure(originals());
-        return t.cast(o);
+
+        return getConfiguredInstance(c, t, originals(configOverrides));
     }
 
     /**
@@ -400,7 +455,6 @@ public class AbstractConfig {
         return getConfiguredInstances(getList(key), t, configOverrides);
     }
 
-
     /**
      * Get a list of configured instances of the given class specified by the given configuration key. The configuration
      * may specify either null or an empty string to indicate no configured instances. In both cases, this method
@@ -417,21 +471,7 @@ public class AbstractConfig {
         Map<String, Object> configPairs = originals();
         configPairs.putAll(configOverrides);
         for (Object klass : classNames) {
-            Object o;
-            if (klass instanceof String) {
-                try {
-                    o = Utils.newInstance((String) klass, t);
-                } catch (ClassNotFoundException e) {
-                    throw new KafkaException(klass + " ClassNotFoundException exception occurred", e);
-                }
-            } else if (klass instanceof Class<?>) {
-                o = Utils.newInstance((Class<?>) klass);
-            } else
-                throw new KafkaException("List contains element of type " + klass.getClass().getName() + ", expected String or Class");
-            if (!t.isInstance(o))
-                throw new KafkaException(klass + " is not an instance of " + t.getName());
-            if (o instanceof Configurable)
-                ((Configurable) o).configure(configPairs);
+            Object o = getConfiguredInstance(klass, t, configPairs);
             objects.add(t.cast(o));
         }
         return objects;
@@ -481,6 +521,7 @@ public class AbstractConfig {
                 resolvedOriginals.putAll(result.data());
             }
         }
+        providers.values().forEach(x -> Utils.closeQuietly(x, "config provider"));
 
         return new ResolvingMap<>(resolvedOriginals, originals);
     }

@@ -16,14 +16,15 @@
  */
 package org.apache.kafka.clients.producer;
 
+import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.internals.DefaultPartitioner;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.ProducerFencedException;
+import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.test.MockSerializer;
 import org.junit.After;
@@ -43,6 +44,7 @@ import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -52,6 +54,7 @@ public class MockProducerTest {
     private MockProducer<byte[], byte[]> producer;
     private final ProducerRecord<byte[], byte[]> record1 = new ProducerRecord<>(topic, "key1".getBytes(), "value1".getBytes());
     private final ProducerRecord<byte[], byte[]> record2 = new ProducerRecord<>(topic, "key2".getBytes(), "value2".getBytes());
+    private final String groupId = "group";
 
     private void buildMockProducer(boolean autoComplete) {
         this.producer = new MockProducer<>(autoComplete, new MockSerializer(), new MockSerializer());
@@ -80,8 +83,8 @@ public class MockProducerTest {
     public void testPartitioner() throws Exception {
         PartitionInfo partitionInfo0 = new PartitionInfo(topic, 0, null, null, null);
         PartitionInfo partitionInfo1 = new PartitionInfo(topic, 1, null, null, null);
-        Cluster cluster = new Cluster(null, new ArrayList<Node>(0), asList(partitionInfo0, partitionInfo1),
-                Collections.<String>emptySet(), Collections.<String>emptySet());
+        Cluster cluster = new Cluster(null, new ArrayList<>(0), asList(partitionInfo0, partitionInfo1),
+                Collections.emptySet(), Collections.emptySet());
         MockProducer<String, String> producer = new MockProducer<>(cluster, true, new DefaultPartitioner(), new StringSerializer(), new StringSerializer());
         ProducerRecord<String, String> record = new ProducerRecord<>(topic, "key", "value");
         Future<RecordMetadata> metadata = producer.send(record);
@@ -129,16 +132,13 @@ public class MockProducerTest {
     public void shouldThrowOnInitTransactionIfProducerAlreadyInitializedForTransactions() {
         buildMockProducer(true);
         producer.initTransactions();
-        try {
-            producer.initTransactions();
-            fail("Should have thrown as producer is already initialized");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::initTransactions);
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void shouldThrowOnBeginTransactionIfTransactionsNotInitialized() {
         buildMockProducer(true);
-        producer.beginTransaction();
+        assertThrows(IllegalStateException.class, producer::beginTransaction);
     }
 
     @Test
@@ -149,36 +149,38 @@ public class MockProducerTest {
         assertTrue(producer.transactionInFlight());
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
+    public void shouldThrowOnBeginTransactionsIfTransactionInflight() {
+        buildMockProducer(true);
+        producer.initTransactions();
+        producer.beginTransaction();
+        assertThrows(IllegalStateException.class, () -> producer.beginTransaction());
+    }
+
+    @Test
     public void shouldThrowOnSendOffsetsToTransactionIfTransactionsNotInitialized() {
         buildMockProducer(true);
-        producer.sendOffsetsToTransaction(null, null);
+        assertThrows(IllegalStateException.class, () -> producer.sendOffsetsToTransaction(null, groupId));
     }
 
     @Test
     public void shouldThrowOnSendOffsetsToTransactionTransactionIfNoTransactionGotStarted() {
         buildMockProducer(true);
         producer.initTransactions();
-        try {
-            producer.sendOffsetsToTransaction(null, null);
-            fail("Should have thrown as producer has no open transaction");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, () -> producer.sendOffsetsToTransaction(null, groupId));
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void shouldThrowOnCommitIfTransactionsNotInitialized() {
         buildMockProducer(true);
-        producer.commitTransaction();
+        assertThrows(IllegalStateException.class, producer::commitTransaction);
     }
 
     @Test
     public void shouldThrowOnCommitTransactionIfNoTransactionGotStarted() {
         buildMockProducer(true);
         producer.initTransactions();
-        try {
-            producer.commitTransaction();
-            fail("Should have thrown as producer has no open transaction");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::commitTransaction);
     }
 
     @Test
@@ -216,20 +218,17 @@ public class MockProducerTest {
         assertThat(producer.commitCount(), equalTo(1L));
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void shouldThrowOnAbortIfTransactionsNotInitialized() {
         buildMockProducer(true);
-        producer.abortTransaction();
+        assertThrows(IllegalStateException.class, () -> producer.abortTransaction());
     }
 
     @Test
     public void shouldThrowOnAbortTransactionIfNoTransactionGotStarted() {
         buildMockProducer(true);
         producer.initTransactions();
-        try {
-            producer.abortTransaction();
-            fail("Should have thrown as producer has no open transaction");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::abortTransaction);
     }
 
     @Test
@@ -243,10 +242,10 @@ public class MockProducerTest {
         assertFalse(producer.transactionCommitted());
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void shouldThrowFenceProducerIfTransactionsNotInitialized() {
         buildMockProducer(true);
-        producer.fenceProducer();
+        assertThrows(IllegalStateException.class, () -> producer.fenceProducer());
     }
 
     @Test
@@ -254,10 +253,7 @@ public class MockProducerTest {
         buildMockProducer(true);
         producer.initTransactions();
         producer.fenceProducer();
-        try {
-            producer.beginTransaction();
-            fail("Should have thrown as producer is fenced off");
-        } catch (ProducerFencedException e) { }
+        assertThrows(ProducerFencedException.class, producer::beginTransaction);
     }
 
     @Test
@@ -265,23 +261,24 @@ public class MockProducerTest {
         buildMockProducer(true);
         producer.initTransactions();
         producer.fenceProducer();
-        try {
-            producer.send(null);
-            fail("Should have thrown as producer is fenced off");
-        } catch (KafkaException e) {
-            assertTrue("The root cause of the exception should be ProducerFenced", e.getCause() instanceof ProducerFencedException);
-        }
+        Throwable e = assertThrows(KafkaException.class, () -> producer.send(null));
+        assertTrue("The root cause of the exception should be ProducerFenced", e.getCause() instanceof ProducerFencedException);
     }
 
     @Test
-    public void shouldThrowOnSendOffsetsToTransactionIfProducerGotFenced() {
+    public void shouldThrowOnSendOffsetsToTransactionByGroupIdIfProducerGotFenced() {
         buildMockProducer(true);
         producer.initTransactions();
         producer.fenceProducer();
-        try {
-            producer.sendOffsetsToTransaction(null, null);
-            fail("Should have thrown as producer is fenced off");
-        } catch (ProducerFencedException e) { }
+        assertThrows(ProducerFencedException.class, () -> producer.sendOffsetsToTransaction(null, groupId));
+    }
+
+    @Test
+    public void shouldThrowOnSendOffsetsToTransactionByGroupMetadataIfProducerGotFenced() {
+        buildMockProducer(true);
+        producer.initTransactions();
+        producer.fenceProducer();
+        assertThrows(ProducerFencedException.class, () -> producer.sendOffsetsToTransaction(null, new ConsumerGroupMetadata(groupId)));
     }
 
     @Test
@@ -289,10 +286,7 @@ public class MockProducerTest {
         buildMockProducer(true);
         producer.initTransactions();
         producer.fenceProducer();
-        try {
-            producer.commitTransaction();
-            fail("Should have thrown as producer is fenced off");
-        } catch (ProducerFencedException e) { }
+        assertThrows(ProducerFencedException.class, producer::commitTransaction);
     }
 
     @Test
@@ -300,10 +294,7 @@ public class MockProducerTest {
         buildMockProducer(true);
         producer.initTransactions();
         producer.fenceProducer();
-        try {
-            producer.abortTransaction();
-            fail("Should have thrown as producer is fenced off");
-        } catch (ProducerFencedException e) { }
+        assertThrows(ProducerFencedException.class, producer::abortTransaction);
     }
 
     @Test
@@ -361,7 +352,7 @@ public class MockProducerTest {
     }
 
     @Test
-    public void shouldThrowOnAbortForNonAutoCompleteIfTransactionsAreEnabled() throws Exception {
+    public void shouldThrowOnAbortForNonAutoCompleteIfTransactionsAreEnabled() {
         buildMockProducer(false);
         producer.initTransactions();
         producer.beginTransaction();
@@ -431,24 +422,37 @@ public class MockProducerTest {
         buildMockProducer(true);
         producer.initTransactions();
         producer.beginTransaction();
-
-        try {
-            producer.sendOffsetsToTransaction(Collections.<TopicPartition, OffsetAndMetadata>emptyMap(), null);
-            fail("Should have thrown NullPointerException");
-        } catch (NullPointerException e) { }
+        assertThrows(NullPointerException.class, () -> producer.sendOffsetsToTransaction(Collections.emptyMap(), (String) null));
     }
 
     @Test
-    public void shouldIgnoreEmptyOffsetsWhenSendOffsetsToTransaction() {
+    public void shouldThrowOnNullConsumerGroupMetadataWhenSendOffsetsToTransaction() {
         buildMockProducer(true);
         producer.initTransactions();
         producer.beginTransaction();
-        producer.sendOffsetsToTransaction(Collections.<TopicPartition, OffsetAndMetadata>emptyMap(), "groupId");
+        assertThrows(NullPointerException.class, () -> producer.sendOffsetsToTransaction(Collections.emptyMap(), new ConsumerGroupMetadata(null)));
+    }
+
+    @Test
+    public void shouldIgnoreEmptyOffsetsWhenSendOffsetsToTransactionByGroupId() {
+        buildMockProducer(true);
+        producer.initTransactions();
+        producer.beginTransaction();
+        producer.sendOffsetsToTransaction(Collections.emptyMap(), "groupId");
         assertFalse(producer.sentOffsets());
     }
 
     @Test
-    public void shouldAddOffsetsWhenSendOffsetsToTransaction() {
+    public void shouldIgnoreEmptyOffsetsWhenSendOffsetsToTransactionByGroupMetadata() {
+        buildMockProducer(true);
+        producer.initTransactions();
+        producer.beginTransaction();
+        producer.sendOffsetsToTransaction(Collections.emptyMap(), new ConsumerGroupMetadata("groupId"));
+        assertFalse(producer.sentOffsets());
+    }
+
+    @Test
+    public void shouldAddOffsetsWhenSendOffsetsToTransactionByGroupId() {
         buildMockProducer(true);
         producer.initTransactions();
         producer.beginTransaction();
@@ -461,6 +465,23 @@ public class MockProducerTest {
             }
         };
         producer.sendOffsetsToTransaction(groupCommit, "groupId");
+        assertTrue(producer.sentOffsets());
+    }
+
+    @Test
+    public void shouldAddOffsetsWhenSendOffsetsToTransactionByGroupMetadata() {
+        buildMockProducer(true);
+        producer.initTransactions();
+        producer.beginTransaction();
+
+        assertFalse(producer.sentOffsets());
+
+        Map<TopicPartition, OffsetAndMetadata> groupCommit = new HashMap<TopicPartition, OffsetAndMetadata>() {
+            {
+                put(new TopicPartition(topic, 0), new OffsetAndMetadata(42L, null));
+            }
+        };
+        producer.sendOffsetsToTransaction(groupCommit, new ConsumerGroupMetadata("groupId"));
         assertTrue(producer.sentOffsets());
     }
 
@@ -478,6 +499,13 @@ public class MockProducerTest {
             }
         };
         producer.sendOffsetsToTransaction(groupCommit, "groupId");
+        producer.commitTransaction(); // commit should not reset "sentOffsets" flag
+        assertTrue(producer.sentOffsets());
+
+        producer.beginTransaction();
+        assertFalse(producer.sentOffsets());
+
+        producer.sendOffsetsToTransaction(groupCommit, new ConsumerGroupMetadata("groupId"));
         producer.commitTransaction(); // commit should not reset "sentOffsets" flag
         assertTrue(producer.sentOffsets());
 
@@ -505,7 +533,7 @@ public class MockProducerTest {
             }
         };
         producer.sendOffsetsToTransaction(groupCommit1, group);
-        producer.sendOffsetsToTransaction(groupCommit2, group);
+        producer.sendOffsetsToTransaction(groupCommit2, new ConsumerGroupMetadata(group));
 
         assertTrue(producer.consumerGroupOffsetsHistory().isEmpty());
 
@@ -541,10 +569,18 @@ public class MockProducerTest {
         producer.beginTransaction();
         producer.commitTransaction();
         assertTrue(producer.consumerGroupOffsetsHistory().isEmpty());
+
+        producer.beginTransaction();
+        producer.sendOffsetsToTransaction(groupCommit, new ConsumerGroupMetadata(group));
+        producer.abortTransaction();
+
+        producer.beginTransaction();
+        producer.commitTransaction();
+        assertTrue(producer.consumerGroupOffsetsHistory().isEmpty());
     }
 
     @Test
-    public void shouldPreserveCommittedConsumerGroupsOffsetsOnAbortIfTransactionsAreEnabled() {
+    public void shouldPreserveOffsetsFromCommitByGroupIdOnAbortIfTransactionsAreEnabled() {
         buildMockProducer(true);
         producer.initTransactions();
         producer.beginTransaction();
@@ -569,83 +605,108 @@ public class MockProducerTest {
     }
 
     @Test
+    public void shouldPreserveOffsetsFromCommitByGroupMetadataOnAbortIfTransactionsAreEnabled() {
+        buildMockProducer(true);
+        producer.initTransactions();
+        producer.beginTransaction();
+
+        String group = "g";
+        Map<TopicPartition, OffsetAndMetadata> groupCommit = new HashMap<TopicPartition, OffsetAndMetadata>() {
+            {
+                put(new TopicPartition(topic, 0), new OffsetAndMetadata(42L, null));
+                put(new TopicPartition(topic, 1), new OffsetAndMetadata(73L, null));
+            }
+        };
+        producer.sendOffsetsToTransaction(groupCommit, new ConsumerGroupMetadata(group));
+        producer.commitTransaction();
+
+        producer.beginTransaction();
+
+        String group2 = "g2";
+        Map<TopicPartition, OffsetAndMetadata> groupCommit2 = new HashMap<TopicPartition, OffsetAndMetadata>() {
+            {
+                put(new TopicPartition(topic, 2), new OffsetAndMetadata(53L, null));
+                put(new TopicPartition(topic, 3), new OffsetAndMetadata(84L, null));
+            }
+        };
+        producer.sendOffsetsToTransaction(groupCommit2, new ConsumerGroupMetadata(group2));
+        producer.abortTransaction();
+
+        Map<String, Map<TopicPartition, OffsetAndMetadata>> expectedResult = new HashMap<>();
+        expectedResult.put(group, groupCommit);
+
+        assertThat(producer.consumerGroupOffsetsHistory(), equalTo(Collections.singletonList(expectedResult)));
+    }
+
+    @Test
     public void shouldThrowOnInitTransactionIfProducerIsClosed() {
         buildMockProducer(true);
         producer.close();
-        try {
-            producer.initTransactions();
-            fail("Should have thrown as producer is already closed");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::initTransactions);
     }
 
     @Test
     public void shouldThrowOnSendIfProducerIsClosed() {
         buildMockProducer(true);
         producer.close();
-        try {
-            producer.send(null);
-            fail("Should have thrown as producer is already closed");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, () -> producer.send(null));
     }
 
     @Test
     public void shouldThrowOnBeginTransactionIfProducerIsClosed() {
         buildMockProducer(true);
         producer.close();
-        try {
-            producer.beginTransaction();
-            fail("Should have thrown as producer is already closed");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::beginTransaction);
     }
 
     @Test
-    public void shouldThrowSendOffsetsToTransactionIfProducerIsClosed() {
+    public void shouldThrowSendOffsetsToTransactionByGroupIdIfProducerIsClosed() {
         buildMockProducer(true);
         producer.close();
-        try {
-            producer.sendOffsetsToTransaction(null, null);
-            fail("Should have thrown as producer is already closed");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, () -> producer.sendOffsetsToTransaction(null, groupId));
+    }
+
+    @Test
+    public void shouldThrowSendOffsetsToTransactionByGroupMetadataIfProducerIsClosed() {
+        buildMockProducer(true);
+        producer.close();
+        assertThrows(IllegalStateException.class, () -> producer.sendOffsetsToTransaction(null, new ConsumerGroupMetadata(groupId)));
     }
 
     @Test
     public void shouldThrowOnCommitTransactionIfProducerIsClosed() {
         buildMockProducer(true);
         producer.close();
-        try {
-            producer.commitTransaction();
-            fail("Should have thrown as producer is already closed");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::commitTransaction);
     }
 
     @Test
     public void shouldThrowOnAbortTransactionIfProducerIsClosed() {
         buildMockProducer(true);
         producer.close();
-        try {
-            producer.abortTransaction();
-            fail("Should have thrown as producer is already closed");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::abortTransaction);
     }
 
     @Test
     public void shouldThrowOnFenceProducerIfProducerIsClosed() {
         buildMockProducer(true);
         producer.close();
-        try {
-            producer.fenceProducer();
-            fail("Should have thrown as producer is already closed");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::fenceProducer);
     }
 
     @Test
     public void shouldThrowOnFlushProducerIfProducerIsClosed() {
         buildMockProducer(true);
         producer.close();
-        try {
-            producer.flush();
-            fail("Should have thrown as producer is already closed");
-        } catch (IllegalStateException e) { }
+        assertThrows(IllegalStateException.class, producer::flush);
+    }
+    
+    @Test
+    @SuppressWarnings("unchecked")
+    public void shouldThrowClassCastException() {
+        try (MockProducer<Integer, String> customProducer = new MockProducer<>(true, new IntegerSerializer(), new StringSerializer())) {
+            assertThrows(ClassCastException.class, () -> customProducer.send(new ProducerRecord(topic, "key1", "value1")));
+        }
     }
 
     @Test

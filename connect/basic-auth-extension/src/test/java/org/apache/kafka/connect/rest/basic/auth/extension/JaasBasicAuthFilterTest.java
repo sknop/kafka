@@ -17,9 +17,14 @@
 
 package org.apache.kafka.connect.rest.basic.auth.extension;
 
+import javax.security.auth.callback.Callback;
+import javax.security.auth.callback.CallbackHandler;
+import javax.security.auth.callback.ChoiceCallback;
 import javax.ws.rs.HttpMethod;
 import javax.ws.rs.core.UriInfo;
+
 import org.apache.kafka.common.security.JaasUtils;
+import org.apache.kafka.connect.errors.ConnectException;
 import org.easymock.EasyMock;
 import org.junit.After;
 import org.junit.Before;
@@ -42,6 +47,7 @@ import javax.security.auth.login.Configuration;
 import javax.ws.rs.container.ContainerRequestContext;
 import javax.ws.rs.core.Response;
 
+import static org.junit.Assert.assertThrows;
 import static org.powermock.api.easymock.PowerMock.replayAll;
 
 @RunWith(PowerMockRunner.class)
@@ -169,11 +175,28 @@ public class JaasBasicAuthFilterTest {
         EasyMock.verify(requestContext);
     }
 
+    @Test
+    public void testUnsupportedCallback() {
+        String authHeader = authHeader("basic", "user", "pwd");
+        CallbackHandler callbackHandler = new JaasBasicAuthFilter.BasicAuthCallBackHandler(authHeader);
+        Callback unsupportedCallback = new ChoiceCallback(
+            "You take the blue pill... the story ends, you wake up in your bed and believe whatever you want to believe. " 
+                + "You take the red pill... you stay in Wonderland, and I show you how deep the rabbit hole goes.",
+            new String[] {"blue pill", "red pill"},
+            1,
+            true
+        );
+        assertThrows(ConnectException.class, () -> callbackHandler.handle(new Callback[] {unsupportedCallback}));
+    }
+
+    private String authHeader(String authorization, String username, String password) {
+        return authorization + " " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes());
+    }
+
     private void setMock(String authorization, String username, String password, boolean exceptionCase) {
         EasyMock.expect(requestContext.getMethod()).andReturn(HttpMethod.GET);
-        String authHeader = authorization + " " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes());
         EasyMock.expect(requestContext.getHeaderString(JaasBasicAuthFilter.AUTHORIZATION))
-            .andReturn(authHeader);
+            .andReturn(authHeader(authorization, username, password));
         if (exceptionCase) {
             requestContext.abortWith(EasyMock.anyObject(Response.class));
             EasyMock.expectLastCall();

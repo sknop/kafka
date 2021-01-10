@@ -26,22 +26,22 @@ import org.junit.Test
 class CommandLineUtilsTest {
 
 
-  @Test(expected = classOf[java.lang.IllegalArgumentException])
-  def testParseEmptyArg() {
+  @Test
+  def testParseEmptyArg(): Unit = {
     val argArray = Array("my.empty.property=")
 
-    CommandLineUtils.parseKeyValueArgs(argArray, acceptMissingValue = false)
-  }
-
-  @Test(expected = classOf[java.lang.IllegalArgumentException])
-  def testParseEmptyArgWithNoDelimiter() {
-    val argArray = Array("my.empty.property")
-
-    CommandLineUtils.parseKeyValueArgs(argArray, acceptMissingValue = false)
+    assertThrows(classOf[java.lang.IllegalArgumentException], () => CommandLineUtils.parseKeyValueArgs(argArray, acceptMissingValue = false))
   }
 
   @Test
-  def testParseEmptyArgAsValid() {
+  def testParseEmptyArgWithNoDelimiter(): Unit = {
+    val argArray = Array("my.empty.property")
+
+    assertThrows(classOf[java.lang.IllegalArgumentException], () => CommandLineUtils.parseKeyValueArgs(argArray, acceptMissingValue = false))
+  }
+
+  @Test
+  def testParseEmptyArgAsValid(): Unit = {
     val argArray = Array("my.empty.property=", "my.empty.property1")
     val props = CommandLineUtils.parseKeyValueArgs(argArray)
 
@@ -50,7 +50,7 @@ class CommandLineUtilsTest {
   }
 
   @Test
-  def testParseSingleArg() {
+  def testParseSingleArg(): Unit = {
     val argArray = Array("my.property=value")
     val props = CommandLineUtils.parseKeyValueArgs(argArray)
 
@@ -58,7 +58,7 @@ class CommandLineUtilsTest {
   }
 
   @Test
-  def testParseArgs() {
+  def testParseArgs(): Unit = {
     val argArray = Array("first.property=first","second.property=second")
     val props = CommandLineUtils.parseKeyValueArgs(argArray)
 
@@ -67,7 +67,7 @@ class CommandLineUtilsTest {
   }
 
   @Test
-  def testParseArgsWithMultipleDelimiters() {
+  def testParseArgsWithMultipleDelimiters(): Unit = {
     val argArray = Array("first.property==first", "second.property=second=", "third.property=thi=rd")
     val props = CommandLineUtils.parseKeyValueArgs(argArray)
 
